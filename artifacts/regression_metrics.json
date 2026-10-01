@@ -1,0 +1,41 @@
+{
+  "seed": 42,
+  "learning_rate": 0.05,
+  "n_iterations": 2000,
+  "n_train": 320,
+  "n_test": 80,
+  "final_train_loss": 39877.94207039483,
+  "mae": {
+    "train": 159.16253688516554,
+    "test": 179.54955273772512
+  },
+  "rmse": {
+    "train": 199.69462203673595,
+    "test": 225.97367015472156
+  },
+  "r2": {
+    "train": 0.9548165130861195,
+    "test": 0.9380532013777002
+  },
+  "coefficients": {
+    "plot_area_ha": 903.4686098234512,
+    "rainfall_mm": 14.073135007413583,
+    "soil_ph": 137.2737435918512,
+    "seed_kg": 5.30802189485528,
+    "distance_km": -18.802022885796195,
+    "arrival_hour": -0.6382148556994521
+  },
+  "coefficients_scaled": {
+    "plot_area_ha": 432.38850673643435,
+    "rainfall_mm": 253.9385709583336,
+    "soil_ph": 73.15317143965882,
+    "seed_kg": 484.21536907057185,
+    "distance_km": -143.7842514684843,
+    "arrival_hour": -1.4723963903561448
+  },
+  "bias": -973.051286495071,
+  "converged": true,
+  "lstsq_r2": 0.9548165130861203,
+  "comparison_note": "Gradient descent weights are compared with a least-squares fit on the same train split.",
+  "warnings": []
+}

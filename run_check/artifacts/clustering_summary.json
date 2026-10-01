@@ -1,0 +1,29 @@
+{
+  "stage": "clustering",
+  "group_code": "AI-G12",
+  "model_version": "AI-A1-AI-G12-847f3852",
+  "feature_names": [
+    "plot_area_ha",
+    "rainfall_mm",
+    "soil_ph",
+    "seed_kg",
+    "distance_km",
+    "arrival_hour"
+  ],
+  "rows": 400,
+  "valid_rows": 400,
+  "best_k": 2,
+  "silhouette_score": 0.18301868866100193,
+  "silhouette_by_k": {
+    "2": 0.18301868866100193,
+    "3": 0.1581509071462084,
+    "4": 0.14948934080505785,
+    "5": 0.14426082806309068,
+    "6": 0.14723732098796788
+  },
+  "cluster_sizes": {
+    "0": 226,
+    "1": 174
+  },
+  "status": "ok"
+}
