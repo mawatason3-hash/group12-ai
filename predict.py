@@ -2,134 +2,167 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+import joblib
 
+from src.classification import predict_attention
+from src.clustering import predict_cluster
 from src.regression import predict_yield
 
-
-def _emit_json(payload: dict[str, Any], *, stream: Any = None) -> None:
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=stream or sys.stdout)
-
-
-def _resolve_model_file(model_path: str | Path) -> dict[str, Any]:
-    path = Path(model_path).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Model file does not exist: {path}")
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and "feature_order" in data and "weights" in data:
-        return data
-    if isinstance(data, dict) and "regression_model_path" in data:
-        nested = path.parent / data["regression_model_path"]
-        return _resolve_model_file(nested)
-    raise ValueError("The provided model artifact does not contain a regression model payload.")
+REQUIRED_FIELDS = [
+    "plot_area_ha",
+    "rainfall_mm",
+    "soil_ph",
+    "seed_kg",
+    "distance_km",
+    "arrival_hour",
+]
 
 
-def _coerce_numeric(value: Any) -> float:
+def _print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, separators=(",", ":")))
+
+
+def _parse_record_string(raw: str) -> dict[str, Any]:
     try:
-        return float(value)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - exercised via CLI validation
-        raise ValueError(f"Non-numeric value supplied: {value!r}") from exc
-
-
-def _read_json_input(source: str) -> dict[str, Any]:
-    payload = json.loads(source)
-    if isinstance(payload, list):
-        if not payload:
-            raise ValueError("Input JSON list is empty.")
-        payload = payload[0]
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Input JSON must decode to a dictionary or a list of dictionaries.")
+        raise ValueError("record JSON must decode to an object")
     return payload
 
 
-def _read_file_input(path: Path) -> dict[str, Any]:
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        frame = pd.read_csv(path)
-        if frame.empty:
-            raise ValueError("Input CSV is empty.")
-        row = frame.iloc[0].to_dict()
-        return {str(key): value for key, value in row.items() if str(key) != "record_id"}
-    if suffix == ".json":
-        return _read_json_input(path.read_text(encoding="utf-8"))
-    raise ValueError(f"Unsupported input file type: {suffix or 'unknown'}")
-
-
-def _parse_row_input(raw: str) -> dict[str, Any]:
-    candidate = Path(raw)
-    if candidate.exists():
-        return _read_file_input(candidate)
-
-    if raw.strip().startswith("{"):
-        return _read_json_input(raw)
-
-    pair_text = raw.replace(";", ",")
-    parts = [item.strip() for item in pair_text.split(",") if item.strip()]
-    if not parts:
-        raise ValueError("Input row could not be parsed.")
-
-    if any("=" in item for item in parts):
-        payload: dict[str, Any] = {}
-        for item in parts:
-            key, value = item.split("=", 1)
-            payload[key.strip()] = _coerce_numeric(value.strip())
+def _load_record(record: str | None, record_file: str | None) -> dict[str, Any]:
+    if record_file:
+        path = Path(record_file)
+        if not path.exists():
+            raise FileNotFoundError(f"record file {path} not found")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON: {exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("record JSON must decode to an object")
         return payload
 
-    numeric_values = [_coerce_numeric(value) for value in parts]
-    return {f"value_{index}": value for index, value in enumerate(numeric_values)}
+    if record is None:
+        raise ValueError("provide --record or --record-file")
+    return _parse_record_string(record)
 
 
-def _normalize_for_model(row: dict[str, Any], feature_order: list[str]) -> dict[str, float]:
-    normalized: dict[str, float] = {}
-    for feature in feature_order:
-        if feature in row:
-            normalized[feature] = _coerce_numeric(row[feature])
+def _is_valid_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    if not math.isfinite(float(value)):
+        return False
+    return True
+
+
+def _validate_record(payload: dict[str, Any]) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    missing_fields = [field for field in REQUIRED_FIELDS if field not in payload]
+    for field in missing_fields:
+        errors.append({"field": field, "message": "missing required field"})
+
+    for field in REQUIRED_FIELDS:
+        if field not in payload:
             continue
-        if feature.lower() in {key.lower(): key for key in row}:
-            match = feature.lower()
-            normalized[feature] = _coerce_numeric(row[next(key for key in row if key.lower() == match)])
+        value = payload[field]
+        if not _is_valid_number(value):
+            errors.append({"field": field, "message": "must be a finite numeric value"})
             continue
-        if any(key.startswith("value_") for key in row):
-            indexed = {key: value for key, value in row.items() if key.startswith("value_")}
-            if len(indexed) == len(feature_order):
-                ordered = [indexed[f"value_{index}"] for index in range(len(feature_order))]
-                return {feature_name: _coerce_numeric(ordered[idx]) for idx, feature_name in enumerate(feature_order)}
-        raise ValueError(f"Missing feature value for '{feature}' in the input row.")
-    return normalized
+
+        numeric_value = float(value)
+        if field == "plot_area_ha" and numeric_value <= 0:
+            errors.append({"field": field, "message": "must be > 0"})
+        elif field == "rainfall_mm" and numeric_value < 0:
+            errors.append({"field": field, "message": "must be >= 0"})
+        elif field == "soil_ph" and not (0 <= numeric_value <= 14):
+            errors.append({"field": field, "message": "must be between 0 and 14 inclusive"})
+        elif field == "seed_kg" and numeric_value < 0:
+            errors.append({"field": field, "message": "must be >= 0"})
+        elif field == "distance_km" and numeric_value < 0:
+            errors.append({"field": field, "message": "must be >= 0"})
+        elif field == "arrival_hour" and not (0 <= numeric_value <= 23):
+            errors.append({"field": field, "message": "must be between 0 and 23 inclusive"})
+
+    return errors
+
+
+def _ensure_model_exists(models_dir: Path, filename: str) -> None:
+    candidate = models_dir / filename
+    if not candidate.exists():
+        raise FileNotFoundError(f"model file {filename} not found. Run run_all.py first.")
+
+
+def _load_models(models_dir: Path) -> tuple[dict[str, Any], dict[str, Any], Any, Any, str, str]:
+    for filename in ["model_meta.json", "regression_model.json", "classifier.joblib", "clustering.joblib"]:
+        _ensure_model_exists(models_dir, filename)
+
+    model_meta = json.loads((models_dir / "model_meta.json").read_text(encoding="utf-8"))
+    regression_model = json.loads((models_dir / "regression_model.json").read_text(encoding="utf-8"))
+    classifier_model = joblib.load(models_dir / "classifier.joblib")
+    clustering_model = joblib.load(models_dir / "clustering.joblib")
+    group_code = str(model_meta.get("group_code", ""))
+    model_version = str(model_meta.get("model_version", ""))
+    return model_meta, regression_model, classifier_model, clustering_model, group_code, model_version
 
 
 def main() -> int:
-    """Predict yield using the trained NumPy regression model and emit JSON results."""
-    parser = argparse.ArgumentParser(description="Prediction entry point for the assignment model.")
-    parser.add_argument("--model", required=True, help="Path to the trained model or model metadata JSON.")
-    parser.add_argument("--input", required=True, help="Input row as a CSV/JSON path or comma-separated feature values.")
+    parser = argparse.ArgumentParser(description="Predict crop yield and decision labels for a single record.")
+    parser.add_argument("--record", help="JSON object with the six model features.")
+    parser.add_argument("--record-file", help="Path to a JSON file containing one record object.")
+    parser.add_argument("--models-dir", default="models", help="Directory containing model artifacts.")
     args = parser.parse_args()
 
     try:
-        model_payload = _resolve_model_file(args.model)
-        feature_names = list(model_payload.get("feature_order", []))
-        if not feature_names:
-            raise ValueError("Model JSON does not define feature_order for prediction.")
+        record = _load_record(args.record, args.record_file)
+        errors = _validate_record(record)
+        if errors:
+            _print_json({"status": "error", "errors": errors})
+            return 1
 
-        row = _parse_row_input(args.input)
-        ordered = _normalize_for_model(row, feature_names)
-        prediction = predict_yield(ordered, model_payload)
+        models_dir = Path(args.models_dir)
+        model_meta, regression_model, classifier_model, clustering_model, group_code, model_version = _load_models(models_dir)
+        feature_order = list(model_meta.get("feature_order", REQUIRED_FIELDS))
+        ordered_record = {field: float(record[field]) for field in feature_order if field in record}
+
+        regression_prediction = float(predict_yield(ordered_record, regression_model))
+        classification_prediction, classification_probability = predict_attention(record, classifier_model)
+        cluster_label = int(predict_cluster(record, clustering_model))
+
         payload = {
             "status": "ok",
-            "prediction_kg": float(prediction),
-            "feature_order": feature_names,
-            "input_features": ordered,
+            "regression_prediction": regression_prediction,
+            "classification_prediction": int(classification_prediction),
+            "classification_probability": float(classification_probability),
+            "cluster_label": cluster_label,
+            "group_code": group_code,
+            "model_version": model_version,
+            "feature_order": feature_order,
         }
-        _emit_json(payload)
+        _print_json(payload)
         return 0
-    except Exception as exc:  # pragma: no cover - command-line error contract
-        _emit_json({"status": "error", "error": str(exc)}, stream=sys.stderr)
-        return 2
+    except FileNotFoundError as exc:
+        _print_json({"status": "error", "error": str(exc)})
+        return 1
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("invalid JSON:"):
+            _print_json({"status": "error", "error": message})
+            return 1
+        _print_json({"status": "error", "errors": [{"field": "record", "message": message}]})
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive CLI fallback
+        _print_json({"status": "error", "error": str(exc)})
+        return 1
 
 
 if __name__ == "__main__":
