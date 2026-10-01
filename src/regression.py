@@ -1,203 +1,243 @@
+"""Regression from first principles with NumPy only.
+
+Trains a linear regressor with batch gradient descent. Fits imputer and
+scaler on TRAIN ONLY. Saves both scaled and original-units weights so that
+predict_yield can apply raw-input + original-units weights.
+"""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 
 from .common import PipelineContext, write_json_atomic
 
 
-def mse_loss(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Return the mean squared error for the provided targets and predictions."""
-    return float(np.mean((y_pred - y_true) ** 2))
-
-
-def gradient_descent(
-    X: np.ndarray,
-    y: np.ndarray,
-    *,
-    learning_rate: float = 0.05,
-    n_iterations: int = 2000,
-    initial_weights: np.ndarray | None = None,
-) -> tuple[np.ndarray, list[float], bool]:
-    """Train a linear model via batch gradient descent with a divergence guard."""
-    if X.size == 0:
-        raise ValueError("Training data is empty.")
-    weights = np.zeros(X.shape[1], dtype=float) if initial_weights is None else initial_weights.astype(float)
-    losses: list[float] = []
-    float_lr = float(learning_rate)
-    converged = True
-    previous_loss: float | None = None
-
-    for _ in range(int(n_iterations)):
-        predictions = X @ weights
-        loss = mse_loss(y, predictions)
-        if not np.isfinite(loss):
-            converged = False
-            break
-        losses.append(float(loss))
-        if previous_loss is not None and loss > previous_loss:
-            float_lr *= 0.5
-        previous_loss = loss
-        gradient = (2.0 / len(X)) * (X.T @ (predictions - y))
-        weights = weights - float_lr * gradient
-        if not np.all(np.isfinite(weights)):
-            converged = False
-            break
-    return weights, losses, converged
-
-
-def _r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Compute the coefficient of determination R^2."""
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
-    if np.isclose(ss_tot, 0.0):
-        return 1.0 if np.allclose(y_true, y_pred) else 0.0
-    return 1.0 - (ss_res / ss_tot)
-
-
-def _mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float(np.mean(np.abs(y_true - y_pred)))
-
-
-def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-
-
-def predict_yield(record_dict_or_array: dict[str, float] | np.ndarray, model_json: dict[str, Any]) -> float:
-    """Predict yield for a single row using the saved original-units model parameters."""
-    feature_order = list(model_json.get("feature_order", []))
-    weights = np.asarray(model_json.get("weights", []), dtype=float)
-    bias = float(model_json.get("bias", 0.0))
-    imputation_medians = np.asarray(model_json.get("imputation_medians", []), dtype=float)
+# ----------------------------------------------------------------------------
+# Public helper used by predict.py
+# ----------------------------------------------------------------------------
+def predict_yield(record_dict_or_array: dict[str, float] | np.ndarray,
+                  model_json: dict[str, Any]) -> float:
+    """Predict yield using ONLY raw input + original-units weights."""
+    feature_order = list(model_json["feature_order"])
+    weights = np.asarray(model_json["weights"], dtype=float)
+    bias = float(model_json["bias"])
+    medians = np.asarray(model_json.get("imputation_medians", []), dtype=float)
 
     if isinstance(record_dict_or_array, dict):
-        values = [float(record_dict_or_array[key]) for key in feature_order]
-        row = np.asarray(values, dtype=float)
+        row = np.asarray([float(record_dict_or_array[k]) for k in feature_order],
+                         dtype=float)
     else:
         row = np.asarray(record_dict_or_array, dtype=float)
         if row.shape[0] != len(feature_order):
             raise ValueError("Feature count mismatch for prediction input.")
 
-    if imputation_medians.size:
-        row = np.where(np.isnan(row), imputation_medians, row)
+    if medians.size:
+        row = np.where(np.isnan(row), medians, row)
+
     return float(np.dot(row, weights) + bias)
 
 
+# ----------------------------------------------------------------------------
+# Training
+# ----------------------------------------------------------------------------
+def _mse(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> float:
+    resid = X @ w - y
+    return float(np.mean(resid * resid))
+
+
+def _gradient(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
+    n = X.shape[0]
+    resid = X @ w - y
+    return (2.0 / n) * (X.T @ resid)
+
+
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    resid = y_pred - y_true
+    mae = float(np.mean(np.abs(resid)))
+    rmse = float(np.sqrt(np.mean(resid * resid)))
+    ss_res = float(np.sum(resid * resid))
+    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return {"mae": mae, "rmse": rmse, "r2": r2}
+
+
 def run(ctx: PipelineContext) -> dict[str, Any]:
-    """Train a NumPy-only linear regression model, then save the metrics and model files."""
-    valid_rows = np.isfinite(ctx.y_reg)
-    X_valid = ctx.X[valid_rows]
-    y_valid = ctx.y_reg[valid_rows].astype(float)
+    """Train regression on ALL valid rows. Save metrics and model bundle."""
+    # ---- 1. Determine valid rows (finite target) ---------------------------
+    y_all = np.asarray(ctx.y_reg, dtype=float)
+    valid_mask = np.isfinite(y_all)
+    X_all = np.asarray(ctx.X, dtype=float)
 
-    if X_valid.size == 0 or y_valid.size == 0:
-        raise ValueError("No valid target rows remain for regression training.")
+    # Make sure X has one row per df row
+    if X_all.shape[0] != len(ctx.df):
+        raise ValueError(
+            f"ctx.X has {X_all.shape[0]} rows but df has {len(ctx.df)} rows"
+        )
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_valid,
-        y_valid,
-        test_size=0.2,
+    X_valid = X_all[valid_mask]
+    y_valid = y_all[valid_mask]
+
+    n_valid = X_valid.shape[0]
+    if n_valid == 0:
+        raise ValueError("No rows with a finite regression target.")
+
+    # ---- 2. Split (fit imputer+scaler on TRAIN ONLY) -----------------------
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        X_valid, y_valid,
+        test_size=ctx.seed and 0.2 or 0.2,
         random_state=ctx.seed,
     )
 
-    imputer = SimpleImputer(strategy="median")
-    X_train_imputed = imputer.fit_transform(X_train)
-    X_test_imputed = imputer.transform(X_test)
+    # Impute medians from TRAIN
+    train_medians = np.nanmedian(X_train_raw, axis=0)
+    train_medians = np.where(np.isnan(train_medians), 0.0, train_medians)
 
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train_imputed)
-    X_test_scaled = scaler.transform(X_test_imputed)
+    def _impute(X: np.ndarray) -> np.ndarray:
+        return np.where(np.isnan(X), train_medians, X)
 
-    X_train_aug = np.hstack([np.ones((X_train_scaled.shape[0], 1)), X_train_scaled])
-    X_test_aug = np.hstack([np.ones((X_test_scaled.shape[0], 1)), X_test_scaled])
+    X_train_imp = _impute(X_train_raw)
+    X_test_imp = _impute(X_test_raw)
 
-    weights, loss_history, converged = gradient_descent(
-        X_train_aug,
-        y_train,
-        learning_rate=0.05,
-        n_iterations=2000,
-    )
+    # Scaler stats from TRAIN
+    scaler_mean = X_train_imp.mean(axis=0)
+    scaler_std = X_train_imp.std(axis=0)
+    scaler_std = np.where(scaler_std == 0.0, 1.0, scaler_std)
 
-    train_pred = X_train_aug @ weights
-    test_pred = X_test_aug @ weights
+    def _scale(X: np.ndarray) -> np.ndarray:
+        return (X - scaler_mean) / scaler_std
 
-    train_mae = _mae(y_train, train_pred)
-    train_rmse = _rmse(y_train, train_pred)
-    train_r2 = _r2_score(y_train, train_pred)
-    test_mae = _mae(y_test, test_pred)
-    test_rmse = _rmse(y_test, test_pred)
-    test_r2 = _r2_score(y_test, test_pred)
-    final_train_loss = mse_loss(y_train, train_pred)
+    X_train = _scale(X_train_imp)
+    X_test = _scale(X_test_imp)
 
-    lstsq_coeffs, *_ = np.linalg.lstsq(X_train_aug, y_train, rcond=None)
-    lstsq_r2 = _r2_score(y_train, X_train_aug @ lstsq_coeffs)
+    # Augment with bias column
+    X_train_aug = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
+    X_test_aug = np.hstack([np.ones((X_test.shape[0], 1)), X_test])
 
-    weights_scaled = np.asarray(weights[1:], dtype=float)
-    bias_scaled = float(weights[0])
-    safe_scale = np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
-    original_weights = weights_scaled / safe_scale
-    original_bias = bias_scaled - np.sum(weights_scaled * (scaler.mean_ / safe_scale))
+    # ---- 3. Batch gradient descent (NumPy only) ----------------------------
+    learning_rate = 0.05
+    n_iterations = 2000
 
-    coef_map = {}
-    coef_scaled_map = {}
-    for idx, feature in enumerate(ctx.feature_names):
-        coef_map[feature] = float(original_weights[idx])
-        coef_scaled_map[feature] = float(weights_scaled[idx])
+    w = np.zeros(X_train_aug.shape[1], dtype=float)
+    loss_history: list[float] = []
+    converged = True
 
+    for _ in range(n_iterations):
+        loss = _mse(X_train_aug, y_train, w)
+        loss_history.append(loss)
+        if not np.isfinite(loss):
+            converged = False
+            break
+        grad = _gradient(X_train_aug, y_train, w)
+        w = w - learning_rate * grad
+
+    final_loss = loss_history[-1] if loss_history else float("nan")
+
+    # ---- 4. Metrics on scaled space ----------------------------------------
+    y_train_pred_scaled = X_train_aug @ w
+    y_test_pred_scaled = X_test_aug @ w
+
+    train_metrics_scaled = _metrics(y_train, y_train_pred_scaled)
+    test_metrics_scaled = _metrics(y_test, y_test_pred_scaled)
+
+    # ---- 5. Normal-equation sanity check -----------------------------------
+    try:
+        lstsq_w, *_ = np.linalg.lstsq(X_train_aug, y_train, rcond=None)
+        y_train_lstsq = X_train_aug @ lstsq_w
+        lstsq_r2 = _metrics(y_train, y_train_lstsq)["r2"]
+    except np.linalg.LinAlgError:
+        lstsq_r2 = float("nan")
+
+    # ---- 6. Convert scaled weights -> original-units weights ---------------
+    w_scaled = w[1:].copy()
+    b_scaled = float(w[0])
+
+    # y = b_scaled + sum(w_scaled_i * (x_i - mean_i)/std_i)
+    #   = (b_scaled - sum(w_scaled_i * mean_i / std_i)) + sum(w_scaled_i/std_i * x_i)
+    weights_original = w_scaled / scaler_std
+    bias_original = b_scaled - float(np.sum(w_scaled * scaler_mean / scaler_std))
+
+    # Sanity: original-units metrics should match scaled metrics
+    def _predict_original(X_raw: np.ndarray) -> np.ndarray:
+        Xi = _impute(X_raw)
+        return bias_original + Xi @ weights_original
+
+    y_train_pred = _predict_original(X_train_raw)
+    y_test_pred = _predict_original(X_test_raw)
+    train_metrics = _metrics(y_train, y_train_pred)
+    test_metrics = _metrics(y_test, y_test_pred)
+
+    # ---- 7. Write metrics JSON ---------------------------------------------
+    metrics_payload = {
+        "seed": ctx.seed,
+        "learning_rate": learning_rate,
+        "n_iterations": n_iterations,
+        "n_train": int(X_train_raw.shape[0]),
+        "n_test": int(X_test_raw.shape[0]),
+        "final_train_loss": float(final_loss),
+        "mae": {"train": train_metrics["mae"], "test": test_metrics["mae"]},
+        "rmse": {"train": train_metrics["rmse"], "test": test_metrics["rmse"]},
+        "r2": {"train": train_metrics["r2"], "test": test_metrics["r2"]},
+        "coefficients": {name: float(weights_original[i])
+                         for i, name in enumerate(ctx.feature_names)},
+        "coefficients_scaled": {name: float(w_scaled[i])
+                                for i, name in enumerate(ctx.feature_names)},
+        "bias": float(bias_original),
+        "converged": bool(converged),
+        "lstsq_r2": float(lstsq_r2),
+        "comparison_note": (
+            "Gradient descent weights are compared with a least-squares fit "
+            "on the same train split."
+        ),
+        "warnings": [] if converged else ["gradient descent did not converge"],
+    }
+
+    metrics_path = ctx.output_dir / "regression_metrics.json"
+    write_json_atomic(metrics_path, metrics_payload)
+
+    # ---- 8. Loss curve -----------------------------------------------------
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(range(len(loss_history)), loss_history)
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("MSE Loss (scaled)")
+        ax.set_title(f"Regression loss — lr={learning_rate}, n_iter={n_iterations}")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(ctx.output_dir / "regression_loss.png", dpi=150)
+        plt.close(fig)
+    except Exception as exc:  # pragma: no cover
+        metrics_payload.setdefault("warnings", []).append(
+            f"loss plot failed: {exc}"
+        )
+
+    # ---- 9. Save model bundle ---------------------------------------------
     model_payload = {
         "feature_order": list(ctx.feature_names),
-        "imputation_medians": imputer.statistics_.tolist(),
-        "scaler_mean": scaler.mean_.tolist(),
-        "scaler_std": scaler.scale_.tolist(),
-        "weights": original_weights.tolist(),
-        "bias": float(original_bias),
-        "weights_scaled": weights_scaled.tolist(),
-        "bias_scaled": float(bias_scaled),
+        "imputation_medians": train_medians.tolist(),
+        "scaler_mean": scaler_mean.tolist(),
+        "scaler_std": scaler_std.tolist(),
+        "weights": weights_original.tolist(),
+        "bias": float(bias_original),
+        "weights_scaled": w_scaled.tolist(),
+        "bias_scaled": float(b_scaled),
     }
+
     model_path = ctx.models_dir / "regression_model.json"
     write_json_atomic(model_path, model_payload)
 
-    loss_path = ctx.output_dir / "regression_loss.png"
-    plt.figure(figsize=(8, 5))
-    plt.plot(range(1, len(loss_history) + 1), loss_history, color="tab:blue", linewidth=1.5)
-    plt.xlabel("Iteration")
-    plt.ylabel("MSE Loss")
-    plt.title("Regression Training Loss Curve")
-    plt.tight_layout()
-    plt.savefig(loss_path, dpi=150)
-    plt.close()
-
-    metrics = {
-        "seed": ctx.seed,
-        "learning_rate": 0.05,
-        "n_iterations": 2000,
-        "n_train": int(len(y_train)),
-        "n_test": int(len(y_test)),
-        "final_train_loss": float(final_train_loss),
-        "mae": {"train": float(train_mae), "test": float(test_mae)},
-        "rmse": {"train": float(train_rmse), "test": float(test_rmse)},
-        "r2": {"train": float(train_r2), "test": float(test_r2)},
-        "coefficients": coef_map,
-        "coefficients_scaled": coef_scaled_map,
-        "bias": float(original_bias),
-        "converged": bool(converged),
-        "lstsq_r2": float(lstsq_r2),
-        "comparison_note": "Gradient descent weights are compared with a least-squares fit on the same train split.",
-        "warnings": [],
-    }
-    metrics_path = ctx.output_dir / "regression_metrics.json"
-    write_json_atomic(metrics_path, metrics)
-
     return {
-        "stage": "regression",
-        "artifact_path": str(metrics_path),
         "status": "ok",
-        "train_r2": float(train_r2),
-        "test_r2": float(test_r2),
+        "artifact": str(metrics_path),
+        "model": str(model_path),
+        "n_train": int(X_train_raw.shape[0]),
+        "n_test": int(X_test_raw.shape[0]),
+        "r2_test": test_metrics["r2"],
+        "rmse_test": test_metrics["rmse"],
     }

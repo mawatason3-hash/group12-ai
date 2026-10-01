@@ -2,40 +2,40 @@
   "seed": 42,
   "learning_rate": 0.05,
   "n_iterations": 2000,
-  "n_train": 64,
-  "n_test": 16,
-  "final_train_loss": 0.20027098497265095,
+  "n_train": 320,
+  "n_test": 80,
+  "final_train_loss": 39877.94207039414,
   "mae": {
-    "train": 0.36645558056590033,
-    "test": 0.41079094311814546
+    "train": 159.16253749216298,
+    "test": 179.54954820108688
   },
   "rmse": {
-    "train": 0.447516463353753,
-    "test": 0.5250016648769321
+    "train": 199.69462203673422,
+    "test": 225.97366816440885
   },
   "r2": {
-    "train": 0.9981018302860205,
-    "test": 0.9969541969685639
+    "train": 0.9548165130861203,
+    "test": 0.9380532024689202
   },
   "coefficients": {
-    "plot_area_ha": 2.4069810578995754,
-    "rainfall_mm": 0.09445007033856913,
-    "soil_ph": 0.322683674815515,
-    "seed_kg": 0.021498557197859702,
-    "distance_km": 0.13622164856950614,
-    "arrival_hour": 0.19818282948000396
+    "plot_area_ha": 903.4684795142811,
+    "rainfall_mm": 14.073134995645193,
+    "soil_ph": 137.2737424842753,
+    "seed_kg": 5.3080225761769775,
+    "distance_km": -18.802022567637756,
+    "arrival_hour": -0.6382140660359272
   },
   "coefficients_scaled": {
-    "plot_area_ha": 7.051301267691099,
-    "rainfall_mm": 1.4115235436014324,
-    "soil_ph": 0.030778093947584285,
-    "seed_kg": 0.9675796622193058,
-    "distance_km": 0.6099229293214727,
-    "arrival_hour": 0.24848218833859198
+    "plot_area_ha": 432.38844437213424,
+    "rainfall_mm": 253.93857074598233,
+    "soil_ph": 73.15317084943166,
+    "seed_kg": 484.2154312229977,
+    "distance_km": -143.78424903543905,
+    "arrival_hour": -1.472394568559436
   },
-  "bias": -4.040139757855414,
+  "bias": -973.0512810837367,
   "converged": true,
-  "lstsq_r2": 0.9989399965084317,
+  "lstsq_r2": 0.9548165130861203,
   "comparison_note": "Gradient descent weights are compared with a least-squares fit on the same train split.",
   "warnings": []
 }
