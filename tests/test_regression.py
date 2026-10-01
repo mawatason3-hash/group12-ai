@@ -52,6 +52,7 @@ def test_loss_monotonic_non_increasing_for_low_lr():
     assert np.isfinite(weights).all()
     assert converged
     assert losses == sorted(losses, reverse=True)
+    assert losses[-1] <= losses[0] + 1e-12
 
 
 def test_noise_free_linear_data_recovers_lstsq_weights(sample_df):
