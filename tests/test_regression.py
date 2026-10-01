@@ -9,7 +9,7 @@ import pytest
 from src.common import PipelineContext
 from src.config import FEATURES, TARGET_REG
 from src.data import build_context
-from src.regression import gradient_descent, run
+from src.regression import gradient_descent, predict_yield, run
 
 
 @pytest.fixture
@@ -95,3 +95,16 @@ def test_regression_metrics_keys_and_missing_values_support(tmp_path):
         payload = json.load(handle)
     for key in ["seed", "learning_rate", "n_iterations", "n_train", "n_test", "final_train_loss", "mae", "rmse", "r2", "coefficients", "coefficients_scaled", "bias", "converged", "lstsq_r2", "comparison_note", "warnings"]:
         assert key in payload
+
+
+def test_predict_yield_uses_original_units_weights():
+    model_json = {
+        "feature_order": ["f1", "f2"],
+        "weights": [2.0, 3.0],
+        "bias": 4.0,
+        "imputation_medians": [0.0, 0.0],
+        "scaler_mean": [10.0, 20.0],
+        "scaler_std": [2.0, 5.0],
+    }
+    record = {"f1": 4.0, "f2": 5.0}
+    assert predict_yield(record, model_json) == 27.0

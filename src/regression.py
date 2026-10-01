@@ -71,13 +71,11 @@ def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 
 def predict_yield(record_dict_or_array: dict[str, float] | np.ndarray, model_json: dict[str, Any]) -> float:
-    """Predict yield for a single row using the saved model parameters."""
+    """Predict yield for a single row using the saved original-units model parameters."""
     feature_order = list(model_json.get("feature_order", []))
     weights = np.asarray(model_json.get("weights", []), dtype=float)
     bias = float(model_json.get("bias", 0.0))
     imputation_medians = np.asarray(model_json.get("imputation_medians", []), dtype=float)
-    scaler_mean = np.asarray(model_json.get("scaler_mean", []), dtype=float)
-    scaler_std = np.asarray(model_json.get("scaler_std", []), dtype=float)
 
     if isinstance(record_dict_or_array, dict):
         values = [float(record_dict_or_array[key]) for key in feature_order]
@@ -89,8 +87,6 @@ def predict_yield(record_dict_or_array: dict[str, float] | np.ndarray, model_jso
 
     if imputation_medians.size:
         row = np.where(np.isnan(row), imputation_medians, row)
-    if scaler_mean.size:
-        row = (row - scaler_mean) / np.where(scaler_std == 0.0, 1.0, scaler_std)
     return float(np.dot(row, weights) + bias)
 
 
@@ -142,22 +138,27 @@ def run(ctx: PipelineContext) -> dict[str, Any]:
     lstsq_coeffs, *_ = np.linalg.lstsq(X_train_aug, y_train, rcond=None)
     lstsq_r2 = _r2_score(y_train, X_train_aug @ lstsq_coeffs)
 
+    weights_scaled = np.asarray(weights[1:], dtype=float)
+    bias_scaled = float(weights[0])
+    safe_scale = np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
+    original_weights = weights_scaled / safe_scale
+    original_bias = bias_scaled - np.sum(weights_scaled * (scaler.mean_ / safe_scale))
+
     coef_map = {}
     coef_scaled_map = {}
     for idx, feature in enumerate(ctx.feature_names):
-        scaled = weights[idx + 1] / (scaler.scale_[idx] if scaler.scale_[idx] != 0.0 else 1.0)
-        coef_map[feature] = float(scaled)
-        coef_scaled_map[feature] = float(weights[idx + 1])
-    bias = float(weights[0])
-    bias_original = float(bias - np.sum(np.asarray([coef_map[f] * scaler.mean_[idx] for idx, f in enumerate(ctx.feature_names)])))
+        coef_map[feature] = float(original_weights[idx])
+        coef_scaled_map[feature] = float(weights_scaled[idx])
 
     model_payload = {
         "feature_order": list(ctx.feature_names),
         "imputation_medians": imputer.statistics_.tolist(),
         "scaler_mean": scaler.mean_.tolist(),
         "scaler_std": scaler.scale_.tolist(),
-        "weights": np.asarray(weights[1:]).tolist(),
-        "bias": float(bias_original),
+        "weights": original_weights.tolist(),
+        "bias": float(original_bias),
+        "weights_scaled": weights_scaled.tolist(),
+        "bias_scaled": float(bias_scaled),
     }
     model_path = ctx.models_dir / "regression_model.json"
     write_json_atomic(model_path, model_payload)
@@ -184,7 +185,7 @@ def run(ctx: PipelineContext) -> dict[str, Any]:
         "r2": {"train": float(train_r2), "test": float(test_r2)},
         "coefficients": coef_map,
         "coefficients_scaled": coef_scaled_map,
-        "bias": float(bias_original),
+        "bias": float(original_bias),
         "converged": bool(converged),
         "lstsq_r2": float(lstsq_r2),
         "comparison_note": "Gradient descent weights are compared with a least-squares fit on the same train split.",

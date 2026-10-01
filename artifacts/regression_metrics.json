@@ -33,7 +33,7 @@
     "distance_km": 0.6099229293214727,
     "arrival_hour": 0.24848218833859198
   },
-  "bias": -4.040139757855421,
+  "bias": -4.040139757855414,
   "converged": true,
   "lstsq_r2": 0.9989399965084317,
   "comparison_note": "Gradient descent weights are compared with a least-squares fit on the same train split.",

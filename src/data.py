@@ -99,6 +99,7 @@ def build_context(
     """Construct a shared PipelineContext for all downstream stages."""
     feature_names = list(FEATURES)
     X = df[feature_names].to_numpy(dtype=float, copy=True)
+    assert X.shape[0] == len(df), "ctx.X must have one row per dataset row"
     ids = df[ID_COL].astype(str).to_numpy()
     y_reg = df[TARGET_REG].to_numpy(dtype=float, copy=True)
     y_clf = df[TARGET_CLF].to_numpy(dtype=float, copy=True)
