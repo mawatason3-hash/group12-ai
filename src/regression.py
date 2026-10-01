@@ -244,15 +244,19 @@ def run(ctx: PipelineContext) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Compatibility wrapper for tests/test_regression.py
 # ---------------------------------------------------------------------------
 def gradient_descent(X: "np.ndarray", y: "np.ndarray",
                      learning_rate: float = 0.05,
                      n_iterations: int = 2000,
-                     seed: int = 42) -> tuple["np.ndarray", list]:
+                     seed: int = 42) -> tuple["np.ndarray", list, bool]:
     """Run batch gradient descent on an already-augmented design matrix.
 
-    Returns (weights, loss_history). Uses the same update rule as run():
+    Returns (weights, loss_history, converged).
+    Uses the same update rule as run():
         w := w - lr * (2/n) * X.T @ (Xw - y)
     """
     import numpy as _np
@@ -263,14 +267,16 @@ def gradient_descent(X: "np.ndarray", y: "np.ndarray",
     n_features = X.shape[1]
     w = _np.zeros(n_features, dtype=float)
     loss_history: list = []
+    converged = True
 
     for _ in range(n_iterations):
         resid = X @ w - y
         loss = float(_np.mean(resid * resid))
         loss_history.append(loss)
         if not _np.isfinite(loss):
+            converged = False
             break
         grad = (2.0 / X.shape[0]) * (X.T @ resid)
         w = w - learning_rate * grad
 
-    return w, loss_history
+    return w, loss_history, converged
