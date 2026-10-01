@@ -1,0 +1,54 @@
+{
+  "seed": 42,
+  "k_range": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "silhouette_per_k": {
+    "2": 0.18301868866100193,
+    "3": 0.1570419460262414,
+    "4": 0.1451341105656296,
+    "5": 0.14426082806309068
+  },
+  "inertia_per_k": {
+    "2": 1902.456894471672,
+    "3": 1689.894918702482,
+    "4": 1541.5515063305168,
+    "5": 1419.5621836729438
+  },
+  "selected_k": 2,
+  "justification": {
+    "best_score": 0.18301868866100193,
+    "runner_up_score": 0.1570419460262414,
+    "margin": 0.02597674263476052,
+    "note": "Separation is weak; cluster choice is marginal because the best score is within 0.05 of the runner-up."
+  },
+  "cluster_sizes": [
+    226,
+    174
+  ],
+  "cluster_means_original": [
+    {
+      "cluster": 0,
+      "plot_area_ha": 1.6188495575221242,
+      "rainfall_mm": 76.49867256637162,
+      "soil_ph": 5.896592920353981,
+      "seed_kg": 291.9380530973451,
+      "distance_km": 13.88008849557523,
+      "arrival_hour": 10.345132743362832
+    },
+    {
+      "cluster": 1,
+      "plot_area_ha": 0.8845402298850571,
+      "rainfall_mm": 78.09367816091955,
+      "soil_ph": 6.1321264367816095,
+      "seed_kg": 153.94827586206895,
+      "distance_km": 14.483333333333327,
+      "arrival_hour": 9.764367816091953
+    }
+  ],
+  "interpretation_note": "Clusters are statistical groupings of operating profiles, not verified real-world categories.",
+  "search_note": "The dataset is large enough to evaluate k=2,3,4,5."
+}
