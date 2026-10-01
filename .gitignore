@@ -5,3 +5,12 @@ __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
 *.swp
+*.bak
+artifacts/artifacts/
+artifacts/models/
+artifacts/evidence/
+artifacts/*_summary.json
+artifacts/confusion_matrix.png
+artifacts/clustering_projection.png
+models/classification_model.json
+models/clustering_model.json
