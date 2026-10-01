@@ -35,7 +35,8 @@ def run(ctx: PipelineContext) -> dict[str, Any]:
     """Train a balanced logistic regression classifier and save the required metrics and pipeline artifacts.
 
     False negatives are costlier in dispatch triage, so recall is monitored closely in
-    the saved metrics and cost interpretation note.
+    the saved metrics and cost interpretation note. The default threshold is kept at 0.5
+    to make the higher-risk dispatch decisions explicit and reviewable.
     """
     valid_mask = np.isfinite(ctx.y_clf) & np.isfinite(ctx.X).all(axis=1)
     X_valid = ctx.X[valid_mask]
